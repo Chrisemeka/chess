@@ -1,3 +1,4 @@
+import { Socket } from 'dgram';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
 
@@ -8,18 +9,45 @@ const io = new Server(httpServer, {
   }
 });
 
-io.on('connection', (socket) => {
-    console.log(`Client connected: ${socket.id}`);
+const rooms: Record<string, { players: string[] }> = {};
 
-    socket.on("ping", (data) => {
-      console.log(`Received ping from client ${socket.id}:`, data);
+io.on("connection", (socket) => {
+  console.log(`User connected: ${socket.id}`);
 
-      socket.emit("pong", { message: "Hello from Server!", timestamp: new Date()});
-    })
+  // Event: Create a new game room for two players
+  socket.on("create-game", () => {
+    const roomId = Math.random().toString(36).substring(2, 8); 
 
-    socket.on('disconnect', () => {
-        console.log(`Client disconnected: ${socket.id}`);
-    });
+    rooms[roomId] = { players: [socket.id] };
+
+    socket.join(roomId);
+    socket.emit("game-created", { roomId });
+
+    console.log(`Game room created with room ID: ${roomId} by ${socket.id}`);
+  })
+
+  // Event: Join an existing game room
+  socket.on("join-game", (roomId: string) => {
+    const room = rooms[roomId];
+
+    if (room && room.players.length < 2) {
+      room.players.push(socket.id);
+      socket.join(roomId);
+
+      io.to(roomId).emit("player-joined", {roomId, players: room.players});
+      console.log(`User ${socket.id} joined game room: ${roomId}`);
+    }else {
+      socket.emit("error", { message: "Room is full or does not exist." });
+    }
+  })
+
+  socket.on("move", ({ roomId, move }) => {
+    socket.to(roomId).emit("move-received", move);
+});
+
+  socket.on("disconnect", () => {
+    console.log(`User disconnected: ${socket.id}`);
+  });
 });
 
 httpServer.listen(3001, () => {
