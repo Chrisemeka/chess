@@ -1,11 +1,13 @@
-import { Socket } from 'dgram';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
 
 const httpServer = createServer();
+const PORT = Number(process.env.PORT )|| 3000;
 const io = new Server(httpServer, {
-    cors: {
-    origin: "http://localhost:3000", 
+  cors: {
+    origin: ["http://localhost:3000", "https://chess-nine-teal.vercel.app"],
+    methods: ["GET", "POST"],
+    credentials: true
   }
 });
 
@@ -50,6 +52,6 @@ io.on("connection", (socket) => {
   });
 });
 
-httpServer.listen(3001, () => {
-  console.log('Server is listening on port 3001');
+httpServer.listen(PORT, '0.0.0.0', () => {
+  console.log(`Server is listening on port ${PORT}`);
 });

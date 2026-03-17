@@ -17,7 +17,8 @@ export default function Home() {
   const [playerColor, setPlayerColor] = useState<"w" | "b" | null>(null);
 
   useEffect(() => {
-    const newSocket = io("http://localhost:3001");
+    const socketUrl = process.env.NEXT_PUBLIC_SOCKET_URL || "http://localhost:3001";
+    const newSocket = io(socketUrl);
     setSocket(newSocket); 
     
     newSocket.on('game-created', (data: { roomId: string }) => {
