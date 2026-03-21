@@ -7,7 +7,17 @@ interface ChessBoardProps {
   socket: Socket | null;
   roomId: string;
   myColor: "w" | "b" | null;
+  timers: { w: number; b: number };
+  turn: "w" | "b";
+  turnTimer: number;
 }
+
+const formatTime = (ms: number) => {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}:${seconds.toString().padStart(2, '0')}`;
+};
 
 export default function Home() {
   const [socket, setSocket] = useState<Socket | null>(null);
@@ -15,6 +25,10 @@ export default function Home() {
   const [inputRoomId, setInputRoomId] = useState<string>("");
   const [gameStarted, setGameStarted] = useState<boolean>(false); 
   const [playerColor, setPlayerColor] = useState<"w" | "b" | null>(null);
+  const [timers, setTimers] = useState<{w: number, b: number}>({ w: 600000, b: 600000 });
+  const [countdown, setCountdown] = useState<number | null>(null);
+  const [turn, setTurn] = useState<"w" | "b">("w");
+  const [turnTimer, setTurnTimer] = useState<number>(20000);
 
   useEffect(() => {
     const socketUrl = process.env.NEXT_PUBLIC_SERVER_URL || "http://localhost:3001";
@@ -31,6 +45,21 @@ export default function Home() {
       setGameStarted(true);
       setRoomId(data.roomId);
       setPlayerColor(prev => prev || "b");
+    });
+
+    newSocket.on("countdown", (data: { count: number }) => {
+      setCountdown(data.count);
+    });
+
+    newSocket.on("time-update", (data: { timers: {w: number, b: number}, turn: "w" | "b", turnTimer: number }) => {
+      setCountdown(null);
+      setTimers(data.timers);
+      setTurn(data.turn);
+      setTurnTimer(data.turnTimer);
+    });
+
+    newSocket.on("game-over-time", (data: { winner: "w" | "b" }) => {
+      alert(`Game Over: Time Forfeit! ${data.winner === 'w' ? 'White' : 'Black'} wins.`);
     });
 
     newSocket.on("error", (msg: any) => {
@@ -53,6 +82,14 @@ export default function Home() {
       
       {/* Abstract Background Grid to depict chess board faintly */}
       <div className="absolute inset-0 z-0 bg-[linear-gradient(to_right,#80808008_1px,transparent_1px),linear-gradient(to_bottom,#80808008_1px,transparent_1px)] bg-[size:4rem_4rem] pointer-events-none"></div>
+
+      {countdown !== null && (
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-md">
+          <span className="text-[12rem] md:text-[18rem] font-bold text-white drop-shadow-[0_0_30px_rgba(255,255,255,0.7)] animate-pulse">
+            {countdown === 0 ? "GO!" : countdown}
+          </span>
+        </div>
+      )}
 
       <div className="z-10 w-full flex flex-col items-center">
         {!gameStarted && (
@@ -150,14 +187,15 @@ export default function Home() {
               </div>
             </div>
             
-            <ChessBoard socket={socket} roomId={roomId} myColor={playerColor}/>
+            <ChessBoard socket={socket} roomId={roomId} myColor={playerColor} timers={timers} turn={turn} turnTimer={turnTimer}/>
           </div>
         )}
       </div>
     </main>
   );
+}
 
-  function ChessBoard({ socket, roomId, myColor }: ChessBoardProps) {
+function ChessBoard({ socket, roomId, myColor, timers, turn, turnTimer }: ChessBoardProps) {
     const [game, setGame] = useState(new Chess());
     const [selectedSquare, setSelectedSquare] = useState<string | null>(null);
     const [optionSquares, setOptionSquares] = useState<string[]>([]);
@@ -174,13 +212,36 @@ export default function Home() {
     useEffect(() => {
       if (!socket) return;
 
-      socket.on("move-received", (move: { from: string, to: string }) => {
+      const handleMoveReceived = (move: { from: string, to: string }) => {
         const gameCopy = new Chess(game.fen());
         gameCopy.move(move);
         setGame(gameCopy);
-      });
+      };
 
-      return () => { socket.off("move-received"); };
+      const handleTurnForfeited = ({ turn: newTurn }: { turn: "w" | "b" }) => {
+        const parts = game.fen().split(' ');
+        parts[1] = newTurn;
+        if (newTurn === 'w') {
+          parts[5] = String(Number(parts[5]) + 1);
+        }
+        parts[3] = '-';
+        
+        const newGame = new Chess();
+        try {
+          newGame.load(parts.join(' '));
+          setGame(newGame);
+        } catch (e) {
+          console.error("Failed to skip turn", e);
+        }
+      };
+
+      socket.on("move-received", handleMoveReceived);
+      socket.on("turn-forfeited", handleTurnForfeited);
+
+      return () => { 
+        socket.off("move-received", handleMoveReceived); 
+        socket.off("turn-forfeited", handleTurnForfeited);
+      };
     }, [socket, game]);
 
     const onSquareClick = (square: string) => {
@@ -227,40 +288,99 @@ export default function Home() {
     const rows = [8, 7, 6, 5, 4, 3, 2, 1];
     const cols = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'];
 
+    const opponentColor = myColor === 'w' ? 'b' : 'w';
+
     return (
-      <div className={`grid grid-cols-8 border-[12px] border-slate-800 rounded-sm shadow-2xl ${myColor === 'b' ? 'rotate-180' : ''}`}>
-        {rows.map((row, rIdx) => (
-          cols.map((col, cIdx) => {
-            const square = `${col}${row}`;
-            const piece = game.get(square as any);
-            const isDark = (rIdx + cIdx) % 2 !== 0;
-            const isSelected = selectedSquare === square;
-            const isOption = optionSquares.includes(square);
+      <div className="flex flex-col items-center gap-6 w-full max-w-xl">
+        {/* Opponent Timer Board */}
+        <div className={`w-full flex justify-between items-center px-6 py-4 rounded-lg bg-neutral-900/80 border ${turn === opponentColor ? 'border-yellow-500/50 shadow-[0_0_15px_rgba(234,179,8,0.1)]' : 'border-neutral-800'} transition-all`}>
+           <div className="flex items-center gap-3">
+             <div className="w-10 h-10 rounded-full bg-neutral-800 flex items-center justify-center text-2xl pb-1 shadow-inner">
+               {opponentColor === 'w' ? '♔' : '♚'}
+             </div>
+             <div className="flex flex-col">
+               <span className="text-neutral-300 font-medium tracking-wide">Opponent</span>
+               <span className="text-neutral-600 text-[10px] uppercase font-bold tracking-widest">{opponentColor === 'w' ? 'White' : 'Black'}</span>
+             </div>
+           </div>
+           
+           <div className="flex items-center justify-end gap-6 flex-1 pr-2">
+             {turn === opponentColor && (
+               <div className="flex flex-col items-end animate-in fade-in duration-300">
+                 <span className="text-[10px] uppercase text-neutral-500 tracking-widest leading-none mb-1">Turn</span>
+                 <span className={`text-2xl font-mono tracking-wider tabular-nums leading-none ${turnTimer < 10000 ? 'text-red-500 animate-pulse' : 'text-yellow-500'}`}>
+                   00:{String(Math.ceil(turnTimer / 1000)).padStart(2, '0')}
+                 </span>
+               </div>
+             )}
+             <div className="w-[1px] h-10 bg-neutral-800 mx-2 hidden sm:block"></div>
+             <span className={`text-4xl font-mono tracking-wider tabular-nums w-[110px] text-right ${timers[opponentColor] < 30000 ? 'text-red-500 animate-pulse' : 'text-neutral-100'}`}>
+               {formatTime(timers[opponentColor])}
+             </span>
+           </div>
+        </div>
 
-            return (
-              <div 
-                key={square}
-                onClick={() => onSquareClick(square)}
-                className={`w-12 h-12 sm:w-16 sm:h-16 md:w-20 md:h-20 flex items-center justify-center relative cursor-pointer
-                  ${isDark ? 'bg-[#b58863]' : 'bg-[#f0d9b5]'}
-                  ${isSelected ? 'bg-yellow-200/80' : ''} 
-                `}
-              >
-                {isOption && (
-                  <div className="absolute w-4 h-4 bg-black/10 rounded-full z-0" />
-                )}
+        <div className={`grid grid-cols-8 border-[12px] border-slate-800 rounded-sm shadow-2xl ${myColor === 'b' ? 'rotate-180' : ''}`}>
+          {rows.map((row, rIdx) => (
+            cols.map((col, cIdx) => {
+              const square = `${col}${row}`;
+              const piece = game.get(square as any);
+              const isDark = (rIdx + cIdx) % 2 !== 0;
+              const isSelected = selectedSquare === square;
+              const isOption = optionSquares.includes(square);
 
-                {piece && (
-                  <img 
-                    src={`/pieces/${piece.color}${piece.type.toUpperCase()}.svg`} 
-                    className={`w-4/5 h-4/5 ${myColor === 'b' ? 'rotate-180' : ''} `}
-                  />
-                )}
-              </div>
-            );
-          })
-        ))}
+              return (
+                <div 
+                  key={square}
+                  onClick={() => onSquareClick(square)}
+                  className={`w-12 h-12 sm:w-16 sm:h-16 md:w-20 md:h-20 flex items-center justify-center relative cursor-pointer
+                    ${isDark ? 'bg-[#b58863]' : 'bg-[#f0d9b5]'}
+                    ${isSelected ? 'bg-yellow-200/80' : ''} 
+                  `}
+                >
+                  {isOption && (
+                    <div className="absolute w-4 h-4 bg-black/10 rounded-full z-0" />
+                  )}
+
+                  {piece && (
+                    <img 
+                      src={`/pieces/${piece.color}${piece.type.toUpperCase()}.svg`} 
+                      className={`w-4/5 h-4/5 ${myColor === 'b' ? 'rotate-180' : ''} drop-shadow-md`}
+                    />
+                  )}
+                </div>
+              );
+            })
+          ))}
+        </div>
+
+        {/* Player Timer Board */}
+        <div className={`w-full flex justify-between items-center px-6 py-4 rounded-lg bg-neutral-900/80 border ${turn === myColor ? 'border-yellow-500/50 shadow-[0_0_15px_rgba(234,179,8,0.1)]' : 'border-neutral-800'} transition-all`}>
+           <div className="flex items-center gap-3">
+             <div className="w-10 h-10 rounded-full bg-neutral-800 flex items-center justify-center text-2xl pb-1 shadow-inner">
+               {myColor === 'w' ? '♔' : '♚'}
+             </div>
+             <div className="flex flex-col">
+               <span className="text-neutral-300 font-medium tracking-wide">You</span>
+               <span className="text-neutral-600 text-[10px] uppercase font-bold tracking-widest">{myColor === 'w' ? 'White' : 'Black'}</span>
+             </div>
+           </div>
+           
+           <div className="flex items-center justify-end gap-6 flex-1 pr-2">
+             {turn === myColor && (
+               <div className="flex flex-col items-end animate-in fade-in duration-300">
+                 <span className="text-[10px] uppercase text-neutral-500 tracking-widest leading-none mb-1">Turn</span>
+                 <span className={`text-2xl font-mono tracking-wider tabular-nums leading-none ${turnTimer < 10000 ? 'text-red-500 animate-pulse' : 'text-yellow-500'}`}>
+                   00:{String(Math.ceil(turnTimer / 1000)).padStart(2, '0')}
+                 </span>
+               </div>
+             )}
+             <div className="w-[1px] h-10 bg-neutral-800 mx-2 hidden sm:block"></div>
+             <span className={`text-4xl font-mono tracking-wider tabular-nums w-[110px] text-right ${timers[myColor ?? 'w'] < 30000 ? 'text-red-500 animate-pulse' : 'text-neutral-100'}`}>
+               {formatTime(timers[myColor ?? 'w'])}
+             </span>
+           </div>
+        </div>
       </div>
     );
   }
-}
