@@ -19,6 +19,25 @@ const formatTime = (ms: number) => {
   return `${minutes}:${seconds.toString().padStart(2, '0')}`;
 };
 
+const playSound = (sound: string) => {
+  if (typeof window !== 'undefined') {
+    const audio = new Audio(`/sounds/${sound}.mp3`);
+    audio.play().catch(e => console.error("Audio playback failed:", e));
+  }
+};
+
+const playMoveSound = (gameInstance: Chess, move: any) => {
+  if (gameInstance.isCheckmate()) {
+    playSound('Checkmate');
+  } else if (gameInstance.isCheck()) {
+    playSound('Check');
+  } else if (move.captured) {
+    playSound('Capture');
+  } else {
+    playSound('Move');
+  }
+};
+
 export default function Home() {
   const [socket, setSocket] = useState<Socket | null>(null);
   const [roomId, setRoomId] = useState<string>("");
@@ -59,7 +78,19 @@ export default function Home() {
     });
 
     newSocket.on("game-over-time", (data: { winner: "w" | "b" }) => {
-      alert(`Game Over: Time Forfeit! ${data.winner === 'w' ? 'White' : 'Black'} wins.`);
+      setPlayerColor(color => {
+        if (color) {
+          if (data.winner === color) {
+            playSound('Victory');
+          } else {
+            playSound('Defeat');
+          }
+        }
+        return color;
+      });
+      setTimeout(() => {
+        alert(`Game Over: Time Forfeit! ${data.winner === 'w' ? 'White' : 'Black'} wins.`);
+      }, 500);
     });
 
     newSocket.on("error", (msg: any) => {
@@ -202,19 +233,39 @@ function ChessBoard({ socket, roomId, myColor, timers, turn, turnTimer }: ChessB
 
     useEffect(() => {
     if (game.isCheckmate()) {
-      const winner = game.turn() === 'w' ? 'Black' : 'White';
-      alert(`CHECKMATE! ${winner} wins the game.`);
+      const winnerColor = game.turn() === 'w' ? 'b' : 'w';
+      setTimeout(() => {
+        if (myColor === winnerColor) {
+          playSound('Victory');
+        } else {
+          playSound('Defeat');
+        }
+      }, 500);
+      
+      setTimeout(() => {
+        const winner = game.turn() === 'w' ? 'Black' : 'White';
+        alert(`CHECKMATE! ${winner} wins the game.`);
+      }, 1000);
     } else if (game.isDraw() || game.isStalemate() || game.isThreefoldRepetition()) {
-      alert("GAME OVER: It's a draw!");
+      setTimeout(() => {
+        playSound('Stalemate');
+      }, 500);
+
+      setTimeout(() => {
+        alert("GAME OVER: It's a draw!");
+      }, 1000);
     }
-  }, [game]);
+  }, [game, myColor]);
 
     useEffect(() => {
       if (!socket) return;
 
       const handleMoveReceived = (move: { from: string, to: string }) => {
         const gameCopy = new Chess(game.fen());
-        gameCopy.move(move);
+        const moveResult = gameCopy.move(move);
+        if (moveResult) {
+          playMoveSound(gameCopy, moveResult);
+        }
         setGame(gameCopy);
       };
 
@@ -262,13 +313,14 @@ function ChessBoard({ socket, roomId, myColor, timers, turn, turnTimer }: ChessB
 
     const gameCopy = new Chess(game.fen());
     try {
-      const move = gameCopy.move({
+      const moveResult = gameCopy.move({
         from: selectedSquare,
         to: square,
         promotion: "q", 
       });
 
-      if (move) {
+      if (moveResult) {
+        playMoveSound(gameCopy, moveResult);
         setGame(gameCopy);
         socket?.emit("move", { roomId, move: { from: selectedSquare, to: square, promotion: "q" } });
       }
