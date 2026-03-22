@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { io, Socket } from "socket.io-client";
 import { Chess } from "chess.js";
 
@@ -38,6 +38,22 @@ const playMoveSound = (gameInstance: Chess, move: any) => {
   }
 };
 
+const getCapturedPieces = (gameInstance: Chess, color: 'w' | 'b') => {
+  const history = gameInstance.history({ verbose: true });
+  const captured: string[] = [];
+  const oppColor = color === 'w' ? 'b' : 'w';
+  for (const move of history) {
+    if (typeof move === 'object' && move.color === color && move.captured) {
+      captured.push(move.captured);
+    }
+  }
+  
+  const pieceValues: Record<string, number> = { q: 9, r: 5, b: 3, n: 3, p: 1 };
+  captured.sort((a, b) => pieceValues[b] - pieceValues[a]);
+  
+  return captured.map(p => `${oppColor}${p.toUpperCase()}`);
+};
+
 export default function Home() {
   const [socket, setSocket] = useState<Socket | null>(null);
   const [roomId, setRoomId] = useState<string>("");
@@ -47,7 +63,7 @@ export default function Home() {
   const [timers, setTimers] = useState<{w: number, b: number}>({ w: 600000, b: 600000 });
   const [countdown, setCountdown] = useState<number | null>(null);
   const [turn, setTurn] = useState<"w" | "b">("w");
-  const [turnTimer, setTurnTimer] = useState<number>(20000);
+  const [turnTimer, setTurnTimer] = useState<number>(30000);
 
   useEffect(() => {
     const socketUrl = process.env.NEXT_PUBLIC_SERVER_URL || "http://localhost:3001";
@@ -228,6 +244,7 @@ export default function Home() {
 
 function ChessBoard({ socket, roomId, myColor, timers, turn, turnTimer }: ChessBoardProps) {
     const [game, setGame] = useState(new Chess());
+    const gameRef = useRef<Chess>(game);
     const [selectedSquare, setSelectedSquare] = useState<string | null>(null);
     const [optionSquares, setOptionSquares] = useState<string[]>([]);
 
@@ -261,57 +278,46 @@ function ChessBoard({ socket, roomId, myColor, timers, turn, turnTimer }: ChessB
       if (!socket) return;
 
       const handleMoveReceived = (move: { from: string, to: string }) => {
-        const gameCopy = new Chess(game.fen());
-        const moveResult = gameCopy.move(move);
-        if (moveResult) {
-          playMoveSound(gameCopy, moveResult);
-        }
-        setGame(gameCopy);
-      };
-
-      const handleTurnForfeited = ({ turn: newTurn }: { turn: "w" | "b" }) => {
-        const parts = game.fen().split(' ');
-        parts[1] = newTurn;
-        if (newTurn === 'w') {
-          parts[5] = String(Number(parts[5]) + 1);
-        }
-        parts[3] = '-';
-        
-        const newGame = new Chess();
-        try {
-          newGame.load(parts.join(' '));
-          setGame(newGame);
-        } catch (e) {
-          console.error("Failed to skip turn", e);
-        }
+        setGame((prevGame) => {
+          const gameCopy = new Chess(prevGame.fen());
+          try {
+            const moveResult = gameCopy.move(move);
+            if (moveResult) {
+              playMoveSound(gameCopy, moveResult);
+            }
+            gameRef.current = gameCopy;
+            return gameCopy;
+          } catch (e) {
+            console.error("Invalid move received, ignoring:", e);
+            return prevGame;
+          }
+        });
       };
 
       socket.on("move-received", handleMoveReceived);
-      socket.on("turn-forfeited", handleTurnForfeited);
 
       return () => { 
         socket.off("move-received", handleMoveReceived); 
-        socket.off("turn-forfeited", handleTurnForfeited);
       };
-    }, [socket, game]);
+    }, [socket]);
 
     const onSquareClick = (square: string) => {
-
-    const isMyTurn = game.turn() === myColor;
+    const currentGame = gameRef.current;
+    const isMyTurn = currentGame.turn() === myColor;
     if (!isMyTurn) return; 
 
-    const piece = game.get(square as any);
+    const piece = currentGame.get(square as any);
 
     if (!selectedSquare) {
       if (piece && piece.color === myColor) {
         setSelectedSquare(square);
-        const moves = game.moves({ square: square as any, verbose: true });
+        const moves = currentGame.moves({ square: square as any, verbose: true });
         setOptionSquares(moves.map(m => m.to));
       }
       return;
     }
 
-    const gameCopy = new Chess(game.fen());
+    const gameCopy = new Chess(currentGame.fen());
     try {
       const moveResult = gameCopy.move({
         from: selectedSquare,
@@ -321,13 +327,14 @@ function ChessBoard({ socket, roomId, myColor, timers, turn, turnTimer }: ChessB
 
       if (moveResult) {
         playMoveSound(gameCopy, moveResult);
+        gameRef.current = gameCopy;
         setGame(gameCopy);
         socket?.emit("move", { roomId, move: { from: selectedSquare, to: square, promotion: "q" } });
       }
     } catch (e) {
       if (piece && piece.color === myColor) {
         setSelectedSquare(square);
-        const moves = game.moves({ square: square as any, verbose: true });
+        const moves = currentGame.moves({ square: square as any, verbose: true });
         setOptionSquares(moves.map(m => m.to));
         return; 
       }
@@ -350,9 +357,16 @@ function ChessBoard({ socket, roomId, myColor, timers, turn, turnTimer }: ChessB
              <div className="w-10 h-10 rounded-full bg-neutral-800 flex items-center justify-center text-2xl pb-1 shadow-inner">
                {opponentColor === 'w' ? '♔' : '♚'}
              </div>
-             <div className="flex flex-col">
-               <span className="text-neutral-300 font-medium tracking-wide">Opponent</span>
-               <span className="text-neutral-600 text-[10px] uppercase font-bold tracking-widest">{opponentColor === 'w' ? 'White' : 'Black'}</span>
+             <div className="flex flex-col justify-center">
+               <span className="text-neutral-300 font-medium tracking-wide leading-tight">Opponent</span>
+               <span className="text-neutral-600 text-[10px] uppercase font-bold tracking-widest leading-tight">{opponentColor === 'w' ? 'White' : 'Black'}</span>
+               {getCapturedPieces(game, opponentColor).length > 0 && (
+                 <div className="flex flex-wrap items-center mt-1.5 min-h-[18px]">
+                   {getCapturedPieces(game, opponentColor).map((piece, i) => (
+                     <img key={i} src={`/pieces/${piece}.svg`} className="w-[18px] h-[18px] -ml-2.5 first:ml-0 drop-shadow-md z-10 hover:z-20 hover:scale-125 transition-transform" alt="" style={{ zIndex: i }} />
+                   ))}
+                 </div>
+               )}
              </div>
            </div>
            
@@ -412,9 +426,16 @@ function ChessBoard({ socket, roomId, myColor, timers, turn, turnTimer }: ChessB
              <div className="w-10 h-10 rounded-full bg-neutral-800 flex items-center justify-center text-2xl pb-1 shadow-inner">
                {myColor === 'w' ? '♔' : '♚'}
              </div>
-             <div className="flex flex-col">
-               <span className="text-neutral-300 font-medium tracking-wide">You</span>
-               <span className="text-neutral-600 text-[10px] uppercase font-bold tracking-widest">{myColor === 'w' ? 'White' : 'Black'}</span>
+             <div className="flex flex-col justify-center">
+               <span className="text-neutral-300 font-medium tracking-wide leading-tight">You</span>
+               <span className="text-neutral-600 text-[10px] uppercase font-bold tracking-widest leading-tight">{myColor === 'w' ? 'White' : 'Black'}</span>
+               {getCapturedPieces(game, myColor ?? 'w').length > 0 && (
+                 <div className="flex flex-wrap items-center mt-1.5 min-h-[18px]">
+                   {getCapturedPieces(game, myColor ?? 'w').map((piece, i) => (
+                     <img key={i} src={`/pieces/${piece}.svg`} className="w-[18px] h-[18px] -ml-2.5 first:ml-0 drop-shadow-md z-10 hover:z-20 hover:scale-125 transition-transform" alt="" style={{ zIndex: i }} />
+                   ))}
+                 </div>
+               )}
              </div>
            </div>
            

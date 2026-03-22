@@ -72,17 +72,12 @@ io.on("connection", (socket) => {
         const currentTimers = { ...room.timers };
         currentTimers[room.turn] -= elapsed;
 
-        const currentTurnTimer = 20000 - elapsed;
+        const currentTurnTimer = 30000 - elapsed;
 
-        if (currentTimers[room.turn] <= 0) {
+        if (currentTimers[room.turn] <= 0 || currentTurnTimer <= 0) {
           currentTimers[room.turn] = 0;
           io.to(roomId).emit("game-over-time", { winner: room.turn === 'w' ? 'b' : 'w' });
           if (room.interval) clearInterval(room.interval);
-        } else if (currentTurnTimer <= 0) {
-          room.timers[room.turn] -= elapsed;
-          room.turn = room.turn === 'w' ? 'b' : 'w';
-          room.lastMoveTimestamp = Date.now();
-          io.to(roomId).emit("turn-forfeited", { turn: room.turn });
         }
 
         io.to(roomId).emit("time-update", { 
@@ -99,6 +94,9 @@ io.on("connection", (socket) => {
   socket.on("move", ({ roomId, move }) => {
     const room = rooms[roomId];
     if (room && room.timers && room.turn && room.lastMoveTimestamp && room.state === 'playing') {
+        const senderColor = room.players[0] === socket.id ? 'w' : 'b';
+        if (room.turn !== senderColor) return;
+
         const now = Date.now();
         const elapsed = now - room.lastMoveTimestamp;
         room.timers[room.turn] -= elapsed;
@@ -107,9 +105,9 @@ io.on("connection", (socket) => {
         room.turn = room.turn === 'w' ? 'b' : 'w';
         room.lastMoveTimestamp = now;
 
-        io.to(roomId).emit("time-update", { timers: room.timers, turn: room.turn, turnTimer: 20000 });
+        io.to(roomId).emit("time-update", { timers: room.timers, turn: room.turn, turnTimer: 30000 });
+        socket.to(roomId).emit("move-received", move);
     }
-    socket.to(roomId).emit("move-received", move);
   });
 
   socket.on("disconnect", () => {
